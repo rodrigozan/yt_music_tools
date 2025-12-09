@@ -4,8 +4,14 @@ import glob
 import asyncio
 from typing import List
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses 
+import FileResponse, JSONResponse
+from fastapi.middleware.cors 
+import CORSMiddleware
+import Security, HTTPException, status, Depends
+from fastapi.security
+import HTTPBearer, HTTPAuthorizationCredentials
+import os
 import yt_dlp
 import ffmpeg
 
