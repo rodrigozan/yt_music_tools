@@ -3,21 +3,38 @@ import os
 import glob
 import asyncio
 from typing import List
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses 
-import FileResponse, JSONResponse
-from fastapi.middleware.cors 
-import CORSMiddleware
-import Security, HTTPException, status, Depends
-from fastapi.security
-import HTTPBearer, HTTPAuthorizationCredentials
-import os
+
+# Importações do FastAPI e Segurança corrigidas
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Security, HTTPException, status, Depends
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# Bibliotecas externas
 import yt_dlp
 import ffmpeg
 
 app = FastAPI(title="YT Music Tools API")
 
-# Configurar CORS (para seu frontend Angular/Ionic poder chamar)
+# --- SEGURANÇA ---
+security = HTTPBearer()
+
+# Pega a senha das variáveis de ambiente (definidas no systemd)
+# Se não encontrar, usa uma senha padrão de aviso
+API_SECRET_TOKEN = os.getenv("API_TOKEN", "senha-padrao-insegura")
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Valida se o token enviado no cabeçalho Authorization bate com a nossa senha."""
+    token = credentials.credentials
+    if token != API_SECRET_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de acesso inválido",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+# --- CONFIGURAÇÃO CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,7 +50,7 @@ TEMP_DIR = "temp"
 for dir_path in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
     os.makedirs(dir_path, exist_ok=True)
 
-# --- FUNÇÕES CORE (Lógica do Script Anterior) ---
+# --- FUNÇÕES CORE (Lógica de Processamento) ---
 
 def processar_video_background(video_path: str, urls: List[str], job_id: str):
     """
@@ -41,6 +58,7 @@ def processar_video_background(video_path: str, urls: List[str], job_id: str):
     """
     print(f"[{job_id}] Iniciando processamento...")
     output_filename = os.path.join(OUTPUT_DIR, f"{job_id}_final.mp4")
+    # Ajuste no template para evitar conflito de nomes
     temp_audio_pattern = os.path.join(TEMP_DIR, f"{job_id}_audio_%(autonumber)s")
 
     try:
@@ -57,7 +75,6 @@ def processar_video_background(video_path: str, urls: List[str], job_id: str):
             ydl.download(urls)
 
         # Listar arquivos baixados para este job
-        # Nota: yt-dlp adiciona a extensão .mp3 automaticamente
         audios = sorted(glob.glob(os.path.join(TEMP_DIR, f"{job_id}_audio_*.mp3")))
 
         if not audios:
@@ -91,35 +108,32 @@ def processar_video_background(video_path: str, urls: List[str], job_id: str):
         print(f"[{job_id}] ERRO FATAL: {str(e)}")
     
     finally:
-        # Limpeza: Remove arquivos temporários de áudio e o vídeo de upload original
+        # Limpeza
         files = glob.glob(os.path.join(TEMP_DIR, f"{job_id}_audio_*"))
         for f in files:
-            os.remove(f)
+            try: os.remove(f)
+            except: pass
         if os.path.exists(video_path):
-            os.remove(video_path)
+            try: os.remove(video_path)
+            except: pass
 
 # --- ENDPOINTS ---
 
-@app.post("/create-music")
+# Rota PROTEGIDA (exige token)
+@app.post("/create-music", dependencies=[Depends(verify_token)])
 async def create_music(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    urls: str = Form(...) # Recebe string separada por vírgulas ou JSON string
+    urls: str = Form(...) 
 ):
-    """
-    Recebe um vídeo (MP4) e uma lista de URLs do YouTube (separadas por vírgula).
-    """
     job_id = f"job_{os.urandom(4).hex()}"
     video_path = os.path.join(UPLOAD_DIR, f"{job_id}_{file.filename}")
     
-    # Salvar o arquivo de vídeo enviado
     with open(video_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # Processar lista de URLs (quebra a string por vírgula)
     lista_urls = [url.strip() for url in urls.split(",") if url.strip()]
 
-    # Adicionar tarefa em background (não trava a resposta da API)
     background_tasks.add_task(processar_video_background, video_path, lista_urls, job_id)
 
     return {
@@ -128,21 +142,20 @@ async def create_music(
         "info": "O vídeo estará disponível em breve no endpoint /download"
     }
 
-@app.get("/videos")
+# Rota PROTEGIDA (exige token)
+@app.get("/videos", dependencies=[Depends(verify_token)])
 def listar_videos():
-    """Lista os vídeos prontos na pasta de saída."""
     files = os.listdir(OUTPUT_DIR)
     return {"videos": files}
 
+# Rota ABERTA (Download não exige token para facilitar acesso direto no browser)
 @app.get("/download/{filename}")
 def download_video(filename: str):
-    """Baixa um vídeo processado."""
     file_path = os.path.join(OUTPUT_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="video/mp4", filename=filename)
     return JSONResponse(status_code=404, content={"message": "Arquivo não encontrado"})
 
-# Se rodar direto pelo python
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
